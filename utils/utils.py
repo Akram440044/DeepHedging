@@ -121,13 +121,6 @@ def simulate_Heston(Ktrain,N,T,rho,kappa,theta,sigma,S0,v0):
     
     return price_path, vol_path
 
-
-
-
-
-
-
-
 # def stimulate_Heston(m,Ktrain,N,T,corr,kappa,theta,xi,S0,v0):
 #     S = [S0]
 #     v = [v0]

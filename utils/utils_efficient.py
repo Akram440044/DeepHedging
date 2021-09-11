@@ -51,15 +51,15 @@ def build_network(m, n, d, N):
                           name=str(j) + 'step' + str(i) + 'layer')
                 x = layer(x)
 #                 x = keras.layers.BatchNormalization()(x)
-                x = tf.nn.relu(x)
+#                 x = tf.nn.relu(x)
                     
             else:
                 nodes = m
-                layer = keras.layers.Dense(nodes, activation='linear', trainable=trainable,
+                layer = keras.layers.Dense(nodes, activation='sigmoid', trainable=trainable,
                               kernel_initializer=keras.initializers.RandomNormal(0,0.1),#kernel_initializer='random_normal',
                               bias_initializer='random_normal',
                               name=str(j) + 'step' + str(i) + 'layer')
-                outputs = layer(x)
+                outputs = layer(x)*10
                 network = keras.Model(inputs = inputs, outputs = outputs)
                 Networks.append(network)
     return Networks
@@ -131,6 +131,7 @@ def delta_hedge(price_path,payoff,T,K,sigma,po,time_grid):
     elif po == np.inf:
         BS_func = BSinf   
     else:
+        print(po)
         print('ERROR')
         
     premium,_ = BS_func(T-time_grid[0], price[:,0,:], K, sigma)
