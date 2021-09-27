@@ -177,3 +177,106 @@ def delta_hedge_cost(price_path,payoff,T,K,sigma,po,time_grid):
         
     outputs = hedge_path[:,-1] 
     return outputs, hedge_path , option_path
+
+
+    
+    
+alpha = 10
+def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po):
+    L = 3 # number of layers in strategy
+    n = m + 20  # nodes in the first but last layers
+    Networks = build_network(m, n , L, N)
+    Network0 = keras.layers.Dense(1, use_bias=False)
+
+    price = keras.Input(shape=(N+1,m))   # S_{t}; t=0,..,N+1; (batch, N+1, m)
+    benchmark_hedge = keras.Input(shape=(N+1,m))   # V_{t}; t=0,..,N+1; (batch, N+1, m)
+    payoff = keras.Input(shape=(1))
+    inputs = [price, payoff]
+    price_difference = price[:,1:,:] - price[:,:-1,:]  # dS_{t}; t=0,..,N; (batch, N, m)
+#     premium = Network0(tf.ones_like(price[:,0,:1])) # premium; (batch, 1)
+    premium = initial_wealth
+    HEDGE = [None]*(N+1)
+    HEDGE[0] = tf.zeros_like(price[:,0,:])
+    STRATEGY = [None]*N
+    ADMISSIBLE = tf.zeros_like(price[:,0,:])
+    cost_all = 0
+    for j in range(N):
+        I = tf.math.log(price[:,j,:])
+        STRATEGY[j] = Networks[j](I) # H_{t} = nn(S_{t}); (batch, m)
+        cost = 0
+        if trans_cost and j > 0: 
+            cost = 0.001*((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])**2
+            cost_all += cost
+        HEDGE[j+1] = HEDGE[j] + STRATEGY[j] * price_difference[:,j,:] - cost # dX_{t} = H_{t}dS_{t}; (batch, m)
+        ADMISSIBLE = tf.math.minimum(ADMISSIBLE, HEDGE[j+1] + premium)
+    outputs = premium + tf.math.reduce_sum(HEDGE[-1],axis = -1, keepdims = True) # premium + \int_{0}^{T}H_{t}dS_{t}; (batch, m)    
+    model_hedge = keras.Model(inputs = inputs, outputs=outputs)
+
+# Define LOSS
+
+    loss1 = ploss(payoff, outputs)
+    loss1 = tf.reduce_mean(loss1)
+    if po not in [0,np.inf]:
+        loss1 = loss1 ** (1/po)
+    model_hedge.add_loss(loss1) 
+    model_hedge.add_metric(loss1, name='p-loss')
+
+    loss2 = tf.nn.relu(-ADMISSIBLE)*alpha
+    loss2 = tf.reduce_mean(loss2)
+    model_hedge.add_loss(loss2) 
+    model_hedge.add_metric(loss2, name='0-ad-loss')
+    
+    if trans_cost:
+        loss_cost = tf.reduce_mean(cost_all)
+        model_hedge.add_metric(loss_cost, name='tran_cost')
+ 
+    
+    return model_hedge, Network0, Networks
+    
+    
+    
+def fair_price(c,T,S0,strike,mu,sigma,p,price_path_EMM):
+    if p == 0:
+        BS_func = BS0
+        price,_ = BS_func(T, S0, [strike,c], sigma)
+    elif p == 1:
+        BS_func = BS1
+        price,_ = BS_func(T, S0, [strike,c], sigma)
+    elif p == np.inf:
+        BS_func = BSinf   
+        price,_ = BS_func(T, S0, [strike,c], sigma)
+    else:
+        def modi_payoff(c,x):
+            EC = 0.5*(np.abs(x-strike)+x-strike)
+            alpha = mu / sigma**2
+            TMP = np.minimum((c**(-1/(p-1)) * x**(-alpha/(p-1))), EC)
+            payoff = EC - TMP
+            return payoff
+        price = modi_payoff(c,price_path_EMM[:,-1]).mean()
+    return price 
+
+def solver(T,S0,strike,mu,sigma,p,endow):
+    price_path_EMM,_ = simulate_GBM(1,10**5,100,T,0,sigma,S0, 'equi-exp')
+    if p in [0,1,np.inf]:
+        c = np.linspace(strike,strike+500,1000)
+        y = fair_price(c,T,S0,strike,mu,sigma,p,price_path_EMM)
+    else:
+        start = 1.5*p + 1.5
+        c = np.linspace(0.1**start,0.1**(start-2),1000)
+        y = []
+        for cc in c:
+            yy = fair_price(cc,T,S0,strike,mu,sigma,p,price_path_EMM)
+            y.append(yy)
+        y = np.array(y)
+    idx = np.argmin(np.abs(y-endow))
+    print(idx)
+    print(y[idx])    
+    return c[idx]
+    
+    
+    
+    
+    
+    
+
+
