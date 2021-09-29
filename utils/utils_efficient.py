@@ -171,7 +171,7 @@ def delta_hedge_cost(price_path,payoff,T,K,sigma,po,time_grid):
         STRATEGY.append(strategy)
         cost = 0
         if j > 0: 
-            cost = 0.001*((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])**2
+            cost = 0.01*tf.math.abs((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])
         hedge_path[:,j+1] = hedge_path[:,j] + strategy * price_difference[:,j,:] - cost 
         option_path[:,j,:] =  option_price
         
@@ -205,7 +205,7 @@ def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po):
         STRATEGY[j] = Networks[j](I) # H_{t} = nn(S_{t}); (batch, m)
         cost = 0
         if trans_cost and j > 0: 
-            cost = 0.001*((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])**2
+            cost = 0.01*tf.math.abs((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])
             cost_all += cost
         HEDGE[j+1] = HEDGE[j] + STRATEGY[j] * price_difference[:,j,:] - cost # dX_{t} = H_{t}dS_{t}; (batch, m)
         ADMISSIBLE = tf.math.minimum(ADMISSIBLE, HEDGE[j+1] + premium)
