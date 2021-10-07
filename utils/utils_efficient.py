@@ -83,9 +83,9 @@ def BlackScholes(tau, S, K, sigma, option_type):
 
 
 
-def BS0(tau, S, K, sigma):
-    K1 = K[0]
-    K2 = K[1]
+def BS0(tau, S, K,L, mu,sigma,p):
+    K1 = K
+    K2 = L
     d1 = (np.log(K1/S) + 0.5*sigma**2*tau) / (sigma*np.sqrt(tau))
     d2 = (np.log(K2/S) + 0.5*sigma**2*tau) / (sigma*np.sqrt(tau))
     d1_prime = d1 - sigma*np.sqrt(tau)
@@ -95,9 +95,9 @@ def BS0(tau, S, K, sigma):
     + (K1/S)*(norm.pdf(d2) - norm.pdf(d1))/(sigma*np.sqrt(tau))
     return price, hedge_strategy
 
-def BS1(tau, S, K, sigma):
-    K1 = K[0]
-    K2 = K[1]
+def BS1(tau, S, K,L, mu,sigma,p):
+    K1 = K
+    K2 = L
     d1 = np.log(S/K2)/sigma/np.sqrt(tau) + 0.5*sigma*np.sqrt(tau)
     d2 = d1-sigma*np.sqrt(tau)
     price = S*norm.cdf(d1) - K1*norm.cdf(d2)
@@ -105,9 +105,9 @@ def BS1(tau, S, K, sigma):
     return price, hedge_strategy
 
 
-def BSinf(tau, S, K, sigma):
-    K1 = K[0]
-    K2 = K[1]
+def BSinf(tau, S, K,L, mu,sigma,p):
+    K1 = K
+    K2 = L
     d1 = np.log(S/K2)/sigma/np.sqrt(tau)+0.5*sigma*np.sqrt(tau)
     d2 = d1-sigma*np.sqrt(tau)
     price = (S*norm.cdf(d1)-K2*norm.cdf(d2))
@@ -115,7 +115,7 @@ def BSinf(tau, S, K, sigma):
     return price, hedge_strategy
 
     
-def delta_hedge(price_path,payoff,T,K,sigma,po,time_grid):
+def delta_hedge(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
     price = price_path
     batch, N, m = price.shape
     N = N - 1 
@@ -131,15 +131,14 @@ def delta_hedge(price_path,payoff,T,K,sigma,po,time_grid):
     elif po == np.inf:
         BS_func = BSinf   
     else:
-        print(po)
-        print('ERROR')
+        BS_func = BSp
         
-    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K, sigma)
+    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po)
     hedge_path[:,0,:] =  premium
     option_path[:,-1,:] =  payoff
     
     for j in range(N):
-        option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,sigma)  
+        option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,L,mu,sigma,po)  
         hedge_path[:,j+1] = hedge_path[:,j] + strategy * price_difference[:,j,:]   
         option_path[:,j,:] =  option_price
         
@@ -147,7 +146,7 @@ def delta_hedge(price_path,payoff,T,K,sigma,po,time_grid):
     return outputs, hedge_path , option_path
     
     
-def delta_hedge_cost(price_path,payoff,T,K,sigma,po,time_grid):
+def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
     price = price_path
     batch, N, m = price.shape
     N = N - 1 
@@ -161,13 +160,13 @@ def delta_hedge_cost(price_path,payoff,T,K,sigma,po,time_grid):
     elif po == np.inf:
         BS_func = BSinf   
     else:
-        print('ERROR')
-    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K, sigma)
+        BS_func = BSp  
+    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po)
     hedge_path[:,0,:] =  premium
     option_path[:,-1,:] =  payoff
     STRATEGY = []
     for j in range(N):
-        option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,sigma)  
+        option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,L,mu,sigma,po)  
         STRATEGY.append(strategy)
         cost = 0
         if j > 0: 
@@ -233,45 +232,48 @@ def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po):
     
     return model_hedge, Network0, Networks
     
+
+def BSp(tau,S0,strike,L,mu,sigma,p):
+    x = S0
+    K = strike
+    alpha = mu/sigma**2
+    d1 = np.log(x/L)/sigma/np.sqrt(tau)+0.5*sigma*np.sqrt(tau)
+    d2 = d1-sigma*np.sqrt(tau)
+    tmp1 = x*norm.cdf(d1) - strike*norm.cdf(d2)
+    tmp2 = (L/x)**(alpha/(p-1))*(L-strike)
+    tmp3 = 0.5*sigma**2*tau**alpha/(p-1)*(alpha/(p-1)+1)
+    tmp4 = d2 - alpha*sigma*np.sqrt(tau)/(p-1)
+    price = tmp1  - tmp2 * np.exp(tmp3) * norm.cdf(tmp4) 
+    beta = alpha/(p-1)
+    tmp1 = norm.cdf(d1)
+    tmp2 = beta * (L/x)**beta * (L-K)/x
+    tmp3 = tmp3
+    tmp4 = tmp4
+    delta = tmp1 + tmp2 * np.exp(tmp3) * norm.cdf(tmp4) 
+    return price, delta
     
     
-def fair_price(c,T,S0,strike,mu,sigma,p,price_path_EMM):
+def fair_price(L,tau,S0,strike,mu,sigma,p):
     if p == 0:
         BS_func = BS0
-        price,_ = BS_func(T, S0, [strike,c], sigma)
+        price,_ = BS_func(tau,S0,strike,L,mu,sigma,p)
     elif p == 1:
         BS_func = BS1
-        price,_ = BS_func(T, S0, [strike,c], sigma)
+        price,_ = BS_func(tau,S0,strike,L,mu,sigma,p)
     elif p == np.inf:
         BS_func = BSinf   
-        price,_ = BS_func(T, S0, [strike,c], sigma)
+        price,_ = BS_func(tau,S0,strike,L,mu,sigma,p)
     else:
-        def modi_payoff(c,x):
-            EC = 0.5*(np.abs(x-strike)+x-strike)
-            alpha = mu / sigma**2
-            TMP = np.minimum((c**(-1/(p-1)) * x**(-alpha/(p-1))), EC)
-            payoff = EC - TMP
-            return payoff
-        price = modi_payoff(c,price_path_EMM[:,-1]).mean()
+        price,_ = BSp(tau,S0,strike,L,mu,sigma,p)
     return price 
 
-def solver(T,S0,strike,mu,sigma,p,endow):
-    price_path_EMM,_ = simulate_GBM(1,10**5,100,T,0,sigma,S0, 'equi-exp')
-    if p in [0,1,np.inf]:
-        c = np.linspace(strike,strike+500,1000)
-        y = fair_price(c,T,S0,strike,mu,sigma,p,price_path_EMM)
-    else:
-        start = 1.5*p + 1.5
-        c = np.linspace(0.1**start,0.1**(start-2),1000)
-        y = []
-        for cc in c:
-            yy = fair_price(cc,T,S0,strike,mu,sigma,p,price_path_EMM)
-            y.append(yy)
-        y = np.array(y)
+def solver(tau,S0,strike,mu,sigma,p,endow):
+    L = np.linspace(strike,strike+200,1000)
+    y = fair_price(L,tau,S0,strike,mu,sigma,p)
     idx = np.argmin(np.abs(y-endow))
     print(idx)
     print(y[idx])    
-    return c[idx]
+    return L[idx]
     
     
     
