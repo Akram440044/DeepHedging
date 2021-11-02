@@ -114,6 +114,14 @@ def BSinf(tau, S, K,L, mu,sigma,p):
     hedge_strategy = norm.cdf(d1)
     return price, hedge_strategy
 
+def BSp0(tau, S, K,L, mu,sigma,p):
+    K_array = np.array([K,L[0],L[1]])
+    b = np.log(K_array/S)/sigma/np.sqrt(tau)-0.5*sigma*np.sqrt(tau)
+    d = b+sigma*np.sqrt(tau)
+    price = S*(1 - norm.cdf(b[0]) + norm.cdf(b[1]) - norm.cdf(b[2])) - K*(1 - norm.cdf(d[0]) + norm.cdf(d[1]) - norm.cdf(d[2]))
+    hedge_strategy = 1 - norm.cdf(b[0]) + norm.cdf(b[1]) - norm.cdf(b[2])
+    return price, hedge_strategy
+
     
 def delta_hedge(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
     price = price_path
@@ -158,9 +166,9 @@ def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
     elif po == 1:
         BS_func = BS1
     elif po == np.inf:
-        BS_func = BSinf   
+        BS_func = BSinf 
     else:
-        BS_func = BSp  
+        BS_func = BSp
     premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po)
     hedge_path[:,0,:] =  premium
     option_path[:,-1,:] =  payoff

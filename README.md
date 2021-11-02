@@ -1,2 +1,0 @@
-# DeepHedging
-DeepHedging
