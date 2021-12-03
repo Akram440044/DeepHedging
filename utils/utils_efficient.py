@@ -3,6 +3,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 keras = tf.keras
+tf.keras.backend.set_floatx('float64')
 
 
 def simulate_GBM(m,Ktrain,N,T, mu, sigma,S0, grid_type):
@@ -30,7 +31,9 @@ def simulate_GBM(m,Ktrain,N,T, mu, sigma,S0, grid_type):
     BM_path_helper = np.cumsum(BM_path_helper, axis=1) # generate and sum the increment of BM
     BM_path = np.concatenate([np.zeros([Ktrain,1,m]),BM_path_helper],axis = 1) # set initial position of BM be 0 
     price_path = S0 * np.exp(sigma * BM_path +  (mu - 0.5 * sigma **2) * time_grid[None,:,None])  # from BM to geometric BM
-    return price_path, time_grid
+    path_1 = sigma * BM_path +  mu * time_grid[None,:,None]
+    path_2 = price_path*0 - sigma**2/2 * time_grid[None,:,None]
+    return price_path, time_grid, path_1, path_2
     
 
 def build_network(m, n, d, N):
@@ -59,14 +62,14 @@ def build_network(m, n, d, N):
                               kernel_initializer=keras.initializers.RandomNormal(0,0.1),#kernel_initializer='random_normal',
                               bias_initializer='random_normal',
                               name=str(j) + 'step' + str(i) + 'layer')
-                outputs = layer(x)*10
+                outputs = 5*layer(x)
                 network = keras.Model(inputs = inputs, outputs = outputs)
                 Networks.append(network)
     return Networks
 
 
 
-def BlackScholes(tau, S, K, sigma, option_type):
+def BlackScholes(tau, S, K, sigma, option_type = 'eurodigitalcall'):
     d1=np.log(S/K)/sigma/np.sqrt(tau)+0.5*sigma*np.sqrt(tau)
     d2=d1-sigma*np.sqrt(tau)
     delta=norm.cdf(d1) 
@@ -105,6 +108,20 @@ def BS1(tau, S, K,L, mu,sigma,p):
     return price, hedge_strategy
 
 
+import tensorflow_probability as tfp
+tfd = tfp.distributions
+a = tf.cast(0,tf.float64)
+b = tf.cast(1,tf.float64)
+dist = tfd.Normal(loc=a, scale=b)
+def BS1_tf(tau, S, K,L, mu,sigma,p):
+    K1 = K
+    K2 = L
+    d1 = tf.math.log(S/K2)/sigma/tf.math.sqrt(tau) + 0.5*sigma*tf.math.sqrt(tau)
+    d2 = d1-sigma*np.math.sqrt(tau)
+#     price = S*dist.cdf(d1) - K1*dist.cdf(d2)
+    hedge_strategy = dist.cdf(d1) + (dist.prob(d1) - K1/S*dist.prob(d2))/(sigma*tf.math.sqrt(tau))
+    return hedge_strategy
+
 def BSinf(tau, S, K,L, mu,sigma,p):
     K1 = K
     K2 = L
@@ -113,6 +130,16 @@ def BSinf(tau, S, K,L, mu,sigma,p):
     price = (S*norm.cdf(d1)-K2*norm.cdf(d2))
     hedge_strategy = norm.cdf(d1)
     return price, hedge_strategy
+
+def BSinf_tf(tau, S, K,L, mu,sigma,p):
+#     K1 = K ## Not useful
+    K2 = L 
+    d1 = tf.math.log(S/K2)/sigma/tf.math.sqrt(tau)+0.5*sigma*tf.math.sqrt(tau)
+    d2 = d1-sigma*tf.math.sqrt(tau)
+#     price = (S*dist.cdf(d1)-K2*dist.cdf(d2))
+    hedge_strategy = dist.cdf(d1)
+    return hedge_strategy
+
 
 def BSp0(tau, S, K,L, mu,sigma,p):
     K_array = np.array([K,L[0],L[1]])
@@ -185,42 +212,70 @@ def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
     outputs = hedge_path[:,-1] 
     return outputs, hedge_path , option_path
 
+alpha = 4
+def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po, time_grid,K,L,mu,sigma,T):
+    m = 1
+    N = 100
+    trans_cost = False
+    initial_wealth = tf.cast(initial_wealth,tf.float64)
+    tau = tf.cast(T-time_grid,tf.float64)
+    L = tf.cast(L,tf.float64)
+    K = tf.cast(K,tf.float64)
+    mu = tf.cast(mu,tf.float64)
+    sigma = tf.cast(sigma,tf.float64)
 
-    
-    
-alpha = 10
-def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po):
-    L = 3 # number of layers in strategy
+    L_n = 3 # number of layers in strategy
     n = m + 20  # nodes in the first but last layers
-    Networks = build_network(m, n , L, N)
+    Networks = build_network(m, n , L_n, N)
     Network0 = keras.layers.Dense(1, use_bias=False)
 
-    price = keras.Input(shape=(N+1,m))   # S_{t}; t=0,..,N+1; (batch, N+1, m)
-    benchmark_hedge = keras.Input(shape=(N+1,m))   # V_{t}; t=0,..,N+1; (batch, N+1, m)
+    L_n = 3 # number of layers in strategy
+    n = m + 20  # nodes in the first but last layers
+    price = keras.Input(shape=(N+1,m)) 
+    path_1 = keras.Input(shape=(N+1,m))   #\mu t + \sigma W_t  t=0,..,N+1; (batch, N+1, m)
+    path_2 = keras.Input(shape=(N+1,m))   # -\sigma^2/2 t; t=0,..,N+1; (batch, N+1, m)
     payoff = keras.Input(shape=(1))
-    inputs = [price, payoff]
-    price_difference = price[:,1:,:] - price[:,:-1,:]  # dS_{t}; t=0,..,N; (batch, N, m)
-#     premium = Network0(tf.ones_like(price[:,0,:1])) # premium; (batch, 1)
+
+    inputs = [price, path_1, path_2, payoff]
+    price_diff = price[:,1:,:] - price[:,:-1,:]
+    path_1_diff = path_1[:,1:,:] - path_1[:,:-1,:]  # \mu dt + \sigma dW_t; t=0,..,N; (batch, N, m)
+    path_2_diff = path_2[:,1:,:] - path_2[:,:-1,:]  # -\sigma^2/2 dt; t=0,..,N; (batch, N, m)
+
     premium = initial_wealth
-    HEDGE = [None]*(N+1)
-    HEDGE[0] = tf.zeros_like(price[:,0,:])
-    STRATEGY = [None]*N
+    HEDGE = [None]*(N+1) 
+    bound = 50
+    HEDGE[0] = tf.zeros_like(price[:,0,:]) + initial_wealth + bound # Wealth process V_t; t=0,..,N+1; (batch, N+1, m)
+    STRATEGY = [None]*N  # holding process \theta_t; t=0,..,N; (batch, N, m)
     ADMISSIBLE = tf.zeros_like(price[:,0,:])
     cost_all = 0
     for j in range(N):
-        I = tf.math.log(price[:,j,:])
-        STRATEGY[j] = Networks[j](I) # H_{t} = nn(S_{t}); (batch, m)
+        log_price = tf.math.log(price[:,j,:])      
+        I = log_price
+#         delta = BSinf_tf(tau[j],price[:,j,:],K,L,mu,sigma,1)
+#         I = tf.concat([log_price, delta],axis = 1)
+        STRATEGY[j] = Networks[j](I) 
+#         STRATEGY[j] = BS1_tf(tau[j],price[:,j,:],K,L,mu,sigma,1)
+        hedge1 = HEDGE[j] + STRATEGY[j] * price_diff[:,j,:]
+
+        pi = STRATEGY[j]*price[:,j,:]/(HEDGE[j] + 1e-10)
+        dlogV = pi * path_1_diff[:,j,:] + pi**2 * path_2_diff[:,j,:]
+        hedge2 = HEDGE[j] * tf.math.exp(dlogV)
+
+        ind0 = tf.cast(HEDGE[j] == 0, tf.float64)
+        ind1 = tf.cast(hedge1 >= 0, tf.float64)
+        ind2 = tf.cast(hedge1 < 0, tf.float64)
+        HEDGE[j+1] = HEDGE[j]*ind0 + hedge1*ind1*(1-ind0) + hedge2*ind2*(1-ind0)
+        
         cost = 0
         if trans_cost and j > 0: 
-            cost = 0.01*tf.math.abs((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])
+            cost = 0.01*tf.math.abs((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])*(1-ind0)
             cost_all += cost
-        HEDGE[j+1] = HEDGE[j] + STRATEGY[j] * price_difference[:,j,:] - cost # dX_{t} = H_{t}dS_{t}; (batch, m)
-        ADMISSIBLE = tf.math.minimum(ADMISSIBLE, HEDGE[j+1] + premium)
-    outputs = premium + tf.math.reduce_sum(HEDGE[-1],axis = -1, keepdims = True) # premium + \int_{0}^{T}H_{t}dS_{t}; (batch, m)    
+        ADMISSIBLE = tf.math.minimum(ADMISSIBLE, HEDGE[j+1]-bound)
+
+    outputs = tf.math.reduce_sum(HEDGE[-1],axis = -1, keepdims = True) - bound
     model_hedge = keras.Model(inputs = inputs, outputs=outputs)
 
 # Define LOSS
-
     loss1 = ploss(payoff, outputs)
     loss1 = tf.reduce_mean(loss1)
     if po not in [0,np.inf]:
@@ -233,12 +288,13 @@ def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po):
     model_hedge.add_loss(loss2) 
     model_hedge.add_metric(loss2, name='0-ad-loss')
     
-    if trans_cost:
-        loss_cost = tf.reduce_mean(cost_all)
-        model_hedge.add_metric(loss_cost, name='tran_cost')
+#     if trans_cost:
+#         loss_cost = tf.reduce_mean(cost_all)
+#         model_hedge.add_metric(loss_cost, name='tran_cost')
  
-    
+ 
     return model_hedge, Network0, Networks
+
     
 
 def BSp(tau,S0,strike,L,mu,sigma,p):
