@@ -62,7 +62,7 @@ def build_network(m, n, d, N):
                               kernel_initializer=keras.initializers.RandomNormal(0,0.1),#kernel_initializer='random_normal',
                               bias_initializer='random_normal',
                               name=str(j) + 'step' + str(i) + 'layer')
-                outputs = 5*layer(x)
+                outputs = layer(x)*2
                 network = keras.Model(inputs = inputs, outputs = outputs)
                 Networks.append(network)
     return Networks
@@ -150,11 +150,13 @@ def BSp0(tau, S, K,L, mu,sigma,p):
     return price, hedge_strategy
 
     
-def delta_hedge(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
+def delta_hedge(price_path,payoff,T,K,L,mu,sigma,po,time_grid, path_1, path_2):
     price = price_path
     batch, N, m = price.shape
     N = N - 1 
     price_difference = price[:,1:,:] - price[:,:-1,:]  
+    path_1_diff = path_1[:,1:,:] - path_1[:,:-1,:]  
+    path_2_diff = path_2[:,1:,:] - path_2[:,:-1,:]  
     
     hedge_path = np.zeros_like(price)
     option_path = np.zeros_like(price) 
@@ -167,25 +169,41 @@ def delta_hedge(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
         BS_func = BSinf   
     else:
         BS_func = BSp
-        
-    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po)
-    hedge_path[:,0,:] =  premium
+    bound = 100    
+    premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po) 
+    hedge_path[:,0,:] =  premium + bound
     option_path[:,-1,:] =  payoff
     
     for j in range(N):
         option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,L,mu,sigma,po)  
-        hedge_path[:,j+1] = hedge_path[:,j] + strategy * price_difference[:,j,:]   
+#         hedge_path[:,j+1] = hedge_path[:,j] + strategy * price_difference[:,j,:]   
         option_path[:,j,:] =  option_price
         
-    outputs = hedge_path[:,-1] 
+        hedge1 = hedge_path[:,j] + strategy * price_difference[:,j,:]   
+
+        pi = hedge_path[:,j]*price[:,j,:]/(hedge_path[:,j] + 1e-10)
+        dlogV = pi * path_1_diff[:,j,:] + pi**2 * path_2_diff[:,j,:]
+        hedge2 = hedge_path[:,j] * np.exp(dlogV)
+
+        ind0 = hedge_path[:,j] == 0
+        ind1 = hedge1 >= 0
+        ind2 = hedge1 < 0
+        hedge_path[:,j+1] = hedge_path[:,j]*ind0 + hedge1*ind1*(1-ind0) + hedge2*ind2*(1-ind0)
+        
+        
+        
+    outputs = hedge_path[:,-1] - bound
     return outputs, hedge_path , option_path
     
     
-def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
+def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid, path_1, path_2):
     price = price_path
     batch, N, m = price.shape
     N = N - 1 
+    
     price_difference = price[:,1:,:] - price[:,:-1,:]  
+    path_1_diff = path_1[:,1:,:] - path_1[:,:-1,:]  
+    path_2_diff = path_2[:,1:,:] - path_2[:,:-1,:] 
     hedge_path = np.zeros_like(price)
     option_path = np.zeros_like(price) 
     if po == 0:
@@ -196,20 +214,33 @@ def delta_hedge_cost(price_path,payoff,T,K,L,mu,sigma,po,time_grid):
         BS_func = BSinf 
     else:
         BS_func = BSp
+    bound = 100
     premium,_ = BS_func(T-time_grid[0], price[:,0,:], K,L, mu,sigma,po)
-    hedge_path[:,0,:] =  premium
+    hedge_path[:,0,:] =  premium + bound
     option_path[:,-1,:] =  payoff
     STRATEGY = []
+    COST = 0
     for j in range(N):
         option_price, strategy = BS_func(T-time_grid[j],price[:,j,:],K,L,mu,sigma,po)  
+        hedge1 = hedge_path[:,j] + strategy * price_difference[:,j,:]   
+
+        pi = hedge_path[:,j]*price[:,j,:]/(hedge_path[:,j] + 1e-10)
+        dlogV = pi * path_1_diff[:,j,:] + pi**2 * path_2_diff[:,j,:]
+        hedge2 = hedge_path[:,j] * np.exp(dlogV)
+
+        ind0 = hedge_path[:,j] == 0
+        ind1 = hedge1 >= 0
+        ind2 = hedge1 < 0
+        hedge_path[:,j+1] = hedge_path[:,j]*ind0 + hedge1*ind1*(1-ind0) + hedge2*ind2*(1-ind0)
+       
         STRATEGY.append(strategy)
         cost = 0
         if j > 0: 
             cost = 0.01*tf.math.abs((STRATEGY[j]- STRATEGY[j-1])*price[:,j,:])
-        hedge_path[:,j+1] = hedge_path[:,j] + strategy * price_difference[:,j,:] - cost 
+        COST += cost 
         option_path[:,j,:] =  option_price
         
-    outputs = hedge_path[:,-1] 
+    outputs = hedge_path[:,-1] - COST - bound
     return outputs, hedge_path , option_path
 
 alpha = 4
@@ -243,7 +274,8 @@ def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po, time_grid,K,
 
     premium = initial_wealth
     HEDGE = [None]*(N+1) 
-    bound = 50
+    bound = 100
+#     bound = 0
     HEDGE[0] = tf.zeros_like(price[:,0,:]) + initial_wealth + bound # Wealth process V_t; t=0,..,N+1; (batch, N+1, m)
     STRATEGY = [None]*N  # holding process \theta_t; t=0,..,N; (batch, N, m)
     ADMISSIBLE = tf.zeros_like(price[:,0,:])
@@ -253,8 +285,12 @@ def build_dynamic_cost(m, N, trans_cost, initial_wealth, ploss, po, time_grid,K,
         I = log_price
 #         delta = BSinf_tf(tau[j],price[:,j,:],K,L,mu,sigma,1)
 #         I = tf.concat([log_price, delta],axis = 1)
+#         I  = tf.concat([log_price, HEDGE[j]],axis = 1)
         STRATEGY[j] = Networks[j](I) 
+#         HEDGE[j+1] = (1-STRATEGY[j])*HEDGE[j] + STRATEGY[j]*HEDGE[j]*tf.math.exp(path_1_diff[:,j,:] + path_2_diff[:,j,:])
+    
 #         STRATEGY[j] = BS1_tf(tau[j],price[:,j,:],K,L,mu,sigma,1)
+
         hedge1 = HEDGE[j] + STRATEGY[j] * price_diff[:,j,:]
 
         pi = STRATEGY[j]*price[:,j,:]/(HEDGE[j] + 1e-10)
